@@ -5,23 +5,15 @@
  *   mpirun -np <P> ./search_engine <corpus_dir> "<query>" <top_k> [--csv]
  *
  * Architecture:
- *   Rank 0 (master):
- *     1. Loads all .txt documents from corpus_dir
- *     2. Builds vocabulary from the entire corpus
- *     3. Computes IDF vector
- *     4. Computes TF-IDF matrix for all documents
- *     5. Computes TF-IDF vector for the query
- *     6. Broadcasts vocabulary size & query vector
- *     7. Scatters document TF-IDF vectors across ranks
- *     8. Each rank computes cosine similarity for its chunk
- *     9. Gathers top-K from each rank
- *    10. Merges and prints final top-K results
- *
- *   Rank 1..P-1 (workers):
- *     - Receive query vector and document chunk
- *     - Compute cosine similarity
- *     - Local sort → keep top-K
- *     - Return top-K to master via MPI_Gatherv
+ *   All ranks:
+ *     1. List corpus files and agree on global ordering
+ *     2. Load a local subset of documents
+ *     3. Build local vocabulary and gather to rank 0
+ *     4. Rank 0 builds global vocabulary and broadcasts it
+ *     5. Each rank computes local DF → MPI_Allreduce to global DF
+ *     6. Each rank computes IDF, TF-IDF for its docs, and query vector
+ *     7. Each rank computes cosine similarity and keeps local top-K
+ *     8. Rank 0 gathers and merges top-K results
  */
 
 #include <stdio.h>
@@ -82,126 +74,191 @@ int main(int argc, char **argv)
     int num_docs   = 0;
     int vocab_size = 0;
 
-    double *tfidf_matrix = NULL;   /* num_docs × vocab_size  (master only initially) */
-    double *query_vec    = NULL;   /* vocab_size              (broadcast to all)      */
-    int    *doc_ids      = NULL;   /* document IDs array      (master only)           */
+    double *query_vec = NULL;
+    double *my_tfidf  = NULL;
+    double *idf       = NULL;
+    int    *local_df  = NULL;
+    int    *global_df = NULL;
 
     /* ══════════════════════════════════════════════════════════════════
-     *  PHASE 1: Index Building (master only)
+     *  PHASE 1: Parallel Index Building
      * ══════════════════════════════════════════════════════════════════ */
 
     t_start = MPI_Wtime();
 
-    if (my_rank == 0) {
-        /* Load documents */
-        Document *docs = load_corpus(corpus_dir, &num_docs);
-        if (!docs || num_docs == 0) {
+    /* List corpus files on all ranks (sorted) */
+    char **files = list_corpus_files(corpus_dir, &num_docs);
+    if (!files || num_docs == 0) {
+        if (my_rank == 0)
             fprintf(stderr, "Error: no documents found in '%s'\n", corpus_dir);
-            MPI_Abort(MPI_COMM_WORLD, 1);
-        }
-
-        if (!csv_mode) {
-            printf("=== MPI Document Search Engine ===\n");
-            printf("Corpus: %s (%d documents)\n", corpus_dir, num_docs);
-            printf("Query:  \"%s\"\n", query_str);
-            printf("Top-K:  %d\n", top_k);
-            printf("Ranks:  %d\n\n", world_size);
-        }
-
-        /* Clamp top_k */
-        if (top_k > num_docs) top_k = num_docs;
-
-        /* Build vocabulary from corpus */
-        Vocabulary *vocab = vocab_create();
-        for (int d = 0; d < num_docs; d++) {
-            int ntok = 0;
-            char **tokens = tokenize(docs[d].text, &ntok);
-            for (int t = 0; t < ntok; t++) {
-                vocab_add(vocab, tokens[t]);
-            }
-            free_tokens(tokens, ntok);
-        }
-        vocab_size = vocab->size;
-
-        if (!csv_mode)
-            printf("Vocabulary size: %d words\n", vocab_size);
-
-        /* Compute IDF */
-        double *idf = compute_idf(docs, num_docs, vocab);
-
-        /* Compute TF-IDF matrix for all documents */
-        tfidf_matrix = compute_tfidf_matrix(docs, num_docs, vocab, idf);
-
-        /* Compute query TF-IDF vector */
-        query_vec = compute_query_tfidf(query_str, vocab, idf);
-
-        /* Store document IDs */
-        doc_ids = malloc(num_docs * sizeof(int));
-        for (int d = 0; d < num_docs; d++) {
-            doc_ids[d] = docs[d].id;
-        }
-
-        /* Clean up corpus (texts no longer needed) */
-        free_corpus(docs, num_docs);
-        free(idf);
-        vocab_free(vocab);
+        MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
-    t_index_done = MPI_Wtime();
-
-    /* ══════════════════════════════════════════════════════════════════
-     *  PHASE 2: Distribute Data
-     * ══════════════════════════════════════════════════════════════════ */
-
-    /* Broadcast metadata */
-    MPI_Bcast(&num_docs,   1, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(&vocab_size, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(&top_k,      1, MPI_INT, 0, MPI_COMM_WORLD);
-
-    /* Allocate query vector on workers and broadcast */
-    if (my_rank != 0) {
-        query_vec = malloc(vocab_size * sizeof(double));
+    int min_docs = 0, max_docs = 0;
+    MPI_Allreduce(&num_docs, &min_docs, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    MPI_Allreduce(&num_docs, &max_docs, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    if (min_docs != max_docs || min_docs == 0) {
+        if (my_rank == 0)
+            fprintf(stderr, "Error: inconsistent corpus view across ranks\n");
+        MPI_Abort(MPI_COMM_WORLD, 1);
     }
-    MPI_Bcast(query_vec, vocab_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    num_docs = min_docs;
 
-    /* ── Compute scatter distribution ──────────────────────────────── */
+    if (!csv_mode && my_rank == 0) {
+        printf("=== MPI Document Search Engine ===\n");
+        printf("Corpus: %s (%d documents)\n", corpus_dir, num_docs);
+        printf("Query:  \"%s\"\n", query_str);
+        printf("Top-K:  %d\n", top_k);
+        printf("Ranks:  %d\n\n", world_size);
+    }
+
+    /* Clamp top_k on master and broadcast */
+    if (my_rank == 0 && top_k > num_docs) top_k = num_docs;
+    MPI_Bcast(&top_k, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    /* ── Compute partitioning ───────────────────────────────────────── */
     int base_count = num_docs / world_size;
     int remainder  = num_docs % world_size;
+    int my_num_docs = base_count + (my_rank < remainder ? 1 : 0);
+    int my_offset = my_rank * base_count + (my_rank < remainder ? my_rank : remainder);
 
-    /* Each rank gets `base_count` docs; first `remainder` ranks get one extra */
-    int *send_counts = malloc(world_size * sizeof(int));
-    int *displs      = malloc(world_size * sizeof(int));
+    /* Load only local documents */
+    Document *docs = NULL;
+    if (my_num_docs > 0) {
+        docs = load_corpus_subset(corpus_dir, files, my_offset, my_num_docs);
+        if (!docs) {
+            fprintf(stderr, "Rank %d: failed to load corpus subset\n", my_rank);
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+    }
+    free_corpus_files(files, num_docs);
 
-    int *id_send_counts = malloc(world_size * sizeof(int));
-    int *id_displs      = malloc(world_size * sizeof(int));
-
-    int offset = 0;
-    for (int r = 0; r < world_size; r++) {
-        int n = base_count + (r < remainder ? 1 : 0);
-        send_counts[r]    = n * vocab_size;  /* TF-IDF: n rows × vocab_size cols */
-        id_send_counts[r] = n;               /* IDs: n elements */
-        displs[r]         = offset * vocab_size;
-        id_displs[r]      = offset;
-        offset += n;
+    /* Build local vocabulary */
+    Vocabulary *local_vocab = vocab_create();
+    if (!local_vocab) {
+        fprintf(stderr, "Rank %d: failed to allocate local vocabulary\n", my_rank);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    for (int d = 0; d < my_num_docs; d++) {
+        int ntok = 0;
+        char **tokens = tokenize(docs[d].text, &ntok);
+        for (int t = 0; t < ntok; t++) {
+            vocab_add(local_vocab, tokens[t]);
+        }
+        free_tokens(tokens, ntok);
     }
 
-    int my_num_docs = base_count + (my_rank < remainder ? 1 : 0);
+    int local_vocab_len = 0;
+    char *local_vocab_buf = vocab_pack(local_vocab, &local_vocab_len);
 
-    /* Allocate local buffers */
-    double *my_tfidf = malloc((size_t)my_num_docs * vocab_size * sizeof(double));
-    int    *my_ids   = malloc(my_num_docs * sizeof(int));
+    int *vocab_counts = NULL;
+    int *vocab_displs = NULL;
+    char *all_vocab_buf = NULL;
+    if (my_rank == 0) {
+        vocab_counts = malloc(world_size * sizeof(int));
+    }
+    MPI_Gather(&local_vocab_len, 1, MPI_INT,
+               vocab_counts, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-    /* Scatter TF-IDF matrix rows */
-    MPI_Scatterv(tfidf_matrix, send_counts, displs, MPI_DOUBLE,
-                 my_tfidf, my_num_docs * vocab_size, MPI_DOUBLE,
-                 0, MPI_COMM_WORLD);
+    int total_vocab_len = 0;
+    if (my_rank == 0) {
+        vocab_displs = malloc(world_size * sizeof(int));
+        int off = 0;
+        for (int r = 0; r < world_size; r++) {
+            vocab_displs[r] = off;
+            off += vocab_counts[r];
+        }
+        total_vocab_len = off;
+        if (total_vocab_len > 0) {
+            all_vocab_buf = malloc((size_t)total_vocab_len);
+        }
+    }
 
-    /* Scatter document IDs */
-    MPI_Scatterv(doc_ids, id_send_counts, id_displs, MPI_INT,
-                 my_ids, my_num_docs, MPI_INT,
-                 0, MPI_COMM_WORLD);
+    MPI_Gatherv(local_vocab_buf, local_vocab_len, MPI_CHAR,
+                all_vocab_buf, vocab_counts, vocab_displs, MPI_CHAR,
+                0, MPI_COMM_WORLD);
 
-    t_scatter_done = MPI_Wtime();
+    vocab_free(local_vocab);
+    free(local_vocab_buf);
+
+    Vocabulary *vocab = NULL;
+    char *global_vocab_buf = NULL;
+    int global_vocab_len = 0;
+
+    if (my_rank == 0) {
+        vocab = vocab_create();
+        if (!vocab) {
+            fprintf(stderr, "Rank 0: failed to allocate global vocabulary\n");
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+        for (int r = 0; r < world_size; r++) {
+            if (vocab_counts[r] > 0) {
+                vocab_add_from_buffer(vocab,
+                                      all_vocab_buf + vocab_displs[r],
+                                      vocab_counts[r]);
+            }
+        }
+        free(all_vocab_buf);
+        free(vocab_counts);
+        free(vocab_displs);
+
+        global_vocab_buf = vocab_pack(vocab, &global_vocab_len);
+    }
+
+    MPI_Bcast(&global_vocab_len, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    if (global_vocab_len > 0) {
+        if (my_rank != 0) {
+            global_vocab_buf = malloc((size_t)global_vocab_len);
+        }
+        MPI_Bcast(global_vocab_buf, global_vocab_len, MPI_CHAR, 0, MPI_COMM_WORLD);
+    }
+
+    if (my_rank != 0) {
+        vocab = vocab_from_buffer(global_vocab_buf, global_vocab_len);
+    }
+
+    free(global_vocab_buf);
+
+    vocab_size = vocab ? vocab->size : 0;
+    if (!csv_mode && my_rank == 0)
+        printf("Vocabulary size: %d words\n", vocab_size);
+
+    /* Compute DF locally and reduce globally */
+    local_df = compute_local_df(docs, my_num_docs, vocab);
+    if (vocab_size > 0 && !local_df) {
+        fprintf(stderr, "Rank %d: failed to compute local DF\n", my_rank);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    if (vocab_size > 0) {
+        global_df = calloc((size_t)vocab_size, sizeof(int));
+        if (!global_df) {
+            fprintf(stderr, "Rank %d: failed to allocate global DF\n", my_rank);
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+        MPI_Allreduce(local_df, global_df, vocab_size, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    }
+
+    idf = compute_idf_from_df(global_df ? global_df : local_df,
+                              vocab_size, num_docs);
+    if (vocab_size > 0 && !idf) {
+        fprintf(stderr, "Rank %d: failed to compute IDF\n", my_rank);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    my_tfidf = compute_tfidf_matrix(docs, my_num_docs, vocab, idf);
+    if (vocab_size > 0 && my_num_docs > 0 && !my_tfidf) {
+        fprintf(stderr, "Rank %d: failed to compute TF-IDF matrix\n", my_rank);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    query_vec = compute_query_tfidf(query_str, vocab, idf);
+    if (vocab_size > 0 && !query_vec) {
+        fprintf(stderr, "Rank %d: failed to compute query vector\n", my_rank);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+
+    free_corpus(docs, my_num_docs);
+
+    t_index_done = MPI_Wtime();
+    t_scatter_done = t_index_done;
 
     /* ══════════════════════════════════════════════════════════════════
      *  PHASE 3: Local Search (all ranks)
@@ -210,9 +267,13 @@ int main(int argc, char **argv)
     /* Compute cosine similarity for each local document */
     SearchResult *local_results = malloc(my_num_docs * sizeof(SearchResult));
     for (int d = 0; d < my_num_docs; d++) {
-        local_results[d].doc_id = my_ids[d];
-        local_results[d].score  = cosine_similarity(
-            &my_tfidf[d * vocab_size], query_vec, vocab_size);
+        local_results[d].doc_id = my_offset + d;
+        if (vocab_size == 0) {
+            local_results[d].score = 0.0;
+        } else {
+            local_results[d].score  = cosine_similarity(
+                &my_tfidf[d * vocab_size], query_vec, vocab_size);
+        }
     }
 
     /* Sort locally and keep top-K */
@@ -327,17 +388,11 @@ int main(int argc, char **argv)
     free(local_scores);
     free(local_results);
     free(my_tfidf);
-    free(my_ids);
     free(query_vec);
-    free(send_counts);
-    free(displs);
-    free(id_send_counts);
-    free(id_displs);
-
-    if (my_rank == 0) {
-        free(tfidf_matrix);
-        free(doc_ids);
-    }
+    free(local_df);
+    free(global_df);
+    free(idf);
+    if (vocab) vocab_free(vocab);
 
     MPI_Finalize();
     return 0;

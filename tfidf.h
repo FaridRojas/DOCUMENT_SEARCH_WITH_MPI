@@ -79,6 +79,11 @@ int vocab_lookup(const Vocabulary *v, const char *word);
  */
 void vocab_free(Vocabulary *v);
 
+/*
+ * Add words from a newline-delimited buffer into a vocabulary.
+ */
+void vocab_add_from_buffer(Vocabulary *v, const char *buf, int len);
+
 /* ── Document I/O ──────────────────────────────────────────────────────── */
 
 /*
@@ -89,9 +94,51 @@ void vocab_free(Vocabulary *v);
 Document *load_corpus(const char *corpus_dir, int *out_count);
 
 /*
+ * List all .txt filenames in `corpus_dir` (sorted lexicographically).
+ * Returns heap-allocated array of strings; *out_count receives count.
+ */
+char **list_corpus_files(const char *corpus_dir, int *out_count);
+
+/*
+ * Free a list returned by list_corpus_files().
+ */
+void free_corpus_files(char **files, int count);
+
+/*
+ * Load a subset of files given a sorted filename list.
+ * `start` is the global index into `files`, and `count` is how many to load.
+ */
+Document *load_corpus_subset(const char *corpus_dir, char **files,
+                             int start, int count);
+
+/*
  * Free an array of documents.
  */
 void free_corpus(Document *docs, int count);
+
+/* ── Parallel TF-IDF Helpers ───────────────────────────────────────────── */
+
+/*
+ * Compute document frequency counts for local documents.
+ * Returns an int array of size vocab->size.
+ */
+int *compute_local_df(Document *docs, int num_docs, const Vocabulary *vocab);
+
+/*
+ * Compute IDF vector from a global DF array.
+ */
+double *compute_idf_from_df(const int *df, int vocab_size, int num_docs);
+
+/*
+ * Pack a vocabulary into a newline-delimited buffer for MPI exchange.
+ * Returns heap-allocated buffer; out_len receives byte length.
+ */
+char *vocab_pack(const Vocabulary *v, int *out_len);
+
+/*
+ * Build a vocabulary from a newline-delimited buffer.
+ */
+Vocabulary *vocab_from_buffer(const char *buf, int len);
 
 /* ── TF-IDF Computation ───────────────────────────────────────────────── */
 

@@ -32,6 +32,11 @@ A parallel document search engine built with MPI that uses **TF-IDF** weighting 
                   └──────────────────┘
 ```
 
+**Nota (version actual):** la indexacion es distribuida. Cada rank carga un
+subconjunto del corpus, construye un vocabulario local, el master fusiona y
+difunde el vocabulario global, y luego todos calculan DF/IDF y TF-IDF de forma
+paralela. Solo se transfieren listas Top-K, reduciendo el volumen de datos.
+
 ## Files
 
 | File | Description |
