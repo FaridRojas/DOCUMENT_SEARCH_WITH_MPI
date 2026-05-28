@@ -105,6 +105,31 @@ El flujo completo del programa puede resumirse en los siguientes pasos:
 Este pipeline esta alineado con la forma en la que se midieron los tiempos
 de indexacion, busqueda y merge en los resultados experimentales.
 
+\section{Mejora de rendimiento: TF-IDF/IDF en paralelo y menos datos transferidos}
+La ultima mejora se enfoco en reducir el tiempo de indexacion y el trafico MPI.
+Antes, el master calculaba el vocabulario, IDF y toda la matriz TF-IDF, y luego
+distribuia esa matriz completa con \texttt{MPI\_Scatterv}. Esto generaba dos
+problemas: (1) una fase de indexacion totalmente serial en el master y
+(2) un volumen grande de datos enviados a todos los procesos.
+
+En la version actual, el trabajo se distribuye desde el inicio:
+\begin{itemize}
+  \item \textbf{Vocabulario paralelo:} cada rank construye su vocabulario local
+  y el master los fusiona para crear el vocabulario global.
+  \item \textbf{DF/IDF paralelos:} cada rank calcula DF local y se realiza un
+  \texttt{MPI\_Allreduce} para obtener DF global y calcular IDF en todos.
+  \item \textbf{TF-IDF local:} cada rank calcula TF-IDF solo para sus documentos,
+  eliminando la necesidad de enviar una matriz completa por la red.
+  \item \textbf{Comunicacion reducida:} solo se transfieren el vocabulario global
+  y los Top-K locales, lo que reduce significativamente el trafico MPI.
+\end{itemize}
+
+El impacto se observa en los resultados: el tiempo de \textbf{Scatter} es
+practicamente cero (Figura~\ref{fig:breakdown}) y el tiempo total baja con P en
+corpus grandes (Figura~\ref{fig:total-time}), con speedup notable hasta 32
+procesos (Figura~\ref{fig:speedup}). El nuevo cuello de botella se desplaza a la
+recoleccion de Top-K (\texttt{Gather/Merge}) cuando P es alto.
+
 \section{Configuracion experimental}
 Las pruebas se realizaron en el cluster usando los mismos parametros que el
 estudio anterior. Se evaluaron corpus de 100, 500, 1000 y 5000 documentos, con
