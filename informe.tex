@@ -15,15 +15,42 @@
 \maketitle
 
 \section{Resumen}
-Se presenta un motor de busqueda de documentos en paralelo usando MPI que
-emplea ponderacion TF-IDF y similitud coseno. El informe se centra en el
-analisis de rendimiento obtenido en el cluster, apoyado por graficas
-generadas a partir de los resultados experimentales.
+Este proyecto implementa un motor de busqueda paralelo con MPI basado en
+TF-IDF y similitud coseno. En esta version la indexacion se distribuye entre
+los procesos (TF-IDF e IDF en paralelo) y se reduce el volumen de datos
+transferidos al intercambiar solo el vocabulario global y los Top-K, lo cual
+mejora el rendimiento global. El informe presenta el algoritmo, la
+paralelizacion y un analisis detallado con las graficas obtenidas.
+
+\section{Conceptos clave (explicados en simple)}
+\begin{itemize}
+  \item \textbf{Corpus:} conjunto de documentos de texto usados como base de busqueda.
+  \item \textbf{Vocabulario:} lista de palabras unicas presentes en el corpus.
+  \item \textbf{Tokenizacion:} proceso de dividir el texto en palabras (tokens).
+  \item \textbf{TF (Term Frequency):} frecuencia relativa de una palabra en un documento.
+  \item \textbf{DF (Document Frequency):} numero de documentos que contienen una palabra.
+  \item \textbf{IDF (Inverse Document Frequency):} peso que reduce palabras muy comunes.
+  \item \textbf{TF-IDF:} producto TF $\times$ IDF; representa importancia de una palabra.
+  \item \textbf{Similitud coseno:} mide el angulo entre dos vectores; 1 significa muy similares.
+  \item \textbf{Top-K:} los K documentos con mayor score de similitud.
+  \item \textbf{Scatter/Gather/Bcast/Allreduce:} operaciones MPI para repartir,
+  recolectar, difundir y reducir datos entre procesos.
+  \item \textbf{Rank:} identificador de cada proceso MPI (0 es el master).
+\end{itemize}
+
+\section{Generacion de corpus de prueba}
+Los corpus usados en las pruebas se generan con \texttt{generate\_corpus.py}.
+El script crea un vocabulario sintetico de tamano configurable (por defecto 5000),
+genera documentos con una distribucion tipo Zipf (algunas palabras aparecen
+mucho mas que otras) y produce una consulta con un numero fijo de terminos.
+Esto permite crear conjuntos de 100, 500, 1000 y 5000 documentos de manera
+reproducible usando una semilla fija.
 
 \section{Descripcion del algoritmo}
-El motor transforma cada documento en un vector TF-IDF y calcula un vector
-TF-IDF para la consulta. Para cada documento se calcula la similitud coseno
-con la consulta y se ordenan los resultados para obtener el Top-K.
+Cada documento se convierte en un vector TF-IDF y la consulta tambien se
+convierte en un vector del mismo tamano. Luego se calcula la similitud coseno
+entre la consulta y cada documento. Finalmente se ordenan los resultados y se
+devuelven los Top-K documentos mas relevantes.
 
 \subsection{TF-IDF}
 Para cada termino $t$ en el documento $d$:
@@ -44,31 +71,53 @@ el termino.
 Los documentos se ordenan de mayor a menor segun esta similitud.
 
 \section{Paralelizacion con MPI}
-El programa divide el trabajo en cuatro fases:
+La version actual distribuye la indexacion y reduce comunicacion:
 \begin{enumerate}
-  \item \textbf{Indexacion (rank 0):} carga el corpus, construye vocabulario,
-  calcula IDF y la matriz TF-IDF.
-  \item \textbf{Distribucion:} el vector de consulta se difunde con
-  \texttt{MPI\_Bcast} y la matriz TF-IDF se reparte con \texttt{MPI\_Scatterv}.
-  \item \textbf{Busqueda local:} cada proceso calcula similitudes coseno y
-  obtiene su Top-K local.
-  \item \textbf{Recoleccion y merge:} el master recoge resultados con
-  \texttt{MPI\_Gatherv} y ordena el Top-K global.
+  \item \textbf{Particion del corpus:} todos los ranks listan los archivos y
+  cargan solo su subconjunto local.
+  \item \textbf{Vocabulario global:} cada rank crea un vocabulario local;
+  el rank 0 los fusiona y lo difunde con \texttt{MPI\_Bcast}.
+  \item \textbf{DF/IDF en paralelo:} cada rank calcula DF local y se combina
+  con \texttt{MPI\_Allreduce} para obtener DF global e IDF.
+  \item \textbf{TF-IDF local:} cada rank calcula TF-IDF solo para sus documentos.
+  \item \textbf{Top-K distribuido:} cada rank calcula similitudes y envia su
+  Top-K; el master los fusiona con \texttt{MPI\_Gatherv}.
 \end{enumerate}
+Este flujo elimina el \texttt{Scatter} de la matriz TF-IDF completa y reduce
+el trafico total a vocabulario y Top-K.
+
+\section{Pipeline del \texttt{search\_engine}}
+El flujo completo del programa puede resumirse en los siguientes pasos:
+\begin{enumerate}
+  \item \textbf{Lectura del corpus:} cada rank lista los archivos y carga solo
+  su particion local en memoria.
+  \item \textbf{Vocabulario global:} se construye un vocabulario local y se
+  fusiona en el master para producir el vocabulario global.
+  \item \textbf{Calculo de DF/IDF:} cada rank calcula DF local, se reduce para
+  obtener DF global y se calcula IDF.
+  \item \textbf{Vectorizacion:} cada rank calcula TF-IDF para sus documentos
+  y el vector TF-IDF de la consulta.
+  \item \textbf{Busqueda:} se calcula la similitud coseno para cada documento
+  local y se obtiene el Top-K local.
+  \item \textbf{Recoleccion final:} el master recibe los Top-K locales,
+  realiza el merge y entrega el ranking final.
+\end{enumerate}
+Este pipeline esta alineado con la forma en la que se midieron los tiempos
+de indexacion, busqueda y merge en los resultados experimentales.
 
 \section{Configuracion experimental}
-Las pruebas se realizaron sobre un cluster con ejecucion MPI, usando
-corpus sinteticos generados con \texttt{generate\_corpus.py}. Se evaluaron
-corpus de 100, 500, 1000 y 5000 documentos, con vocabulario de alrededor de
-5000 palabras. Se uso Top-K = 10 y se ejecutaron multiples repeticiones por
-configuracion (ver resultados en \texttt{results/}).
+Las pruebas se realizaron en el cluster usando los mismos parametros que el
+estudio anterior. Se evaluaron corpus de 100, 500, 1000 y 5000 documentos, con
+vocabulario de alrededor de 5000 palabras, Top-K = 10 y multiples repeticiones.
+Los resultados se almacenan en \texttt{results/}.
 
 \section{Resultados y analisis}
 
 \subsection{Tiempo total}
-La Figura~\ref{fig:total-time} muestra el tiempo total promedio para cada
-tamano de corpus. Para hasta 8 procesos el tiempo total es muy similar a la
-ejecucion secuencial; a partir de 16 procesos el tiempo aumenta.
+La Figura~\ref{fig:total-time} muestra reducciones claras del tiempo total al
+aumentar procesos, especialmente para corpus grandes. Por ejemplo, para 5000
+documentos el tiempo total baja de 45.0 s (P=1) a 11.5 s (P=4) y alcanza un
+minimo de 8.23 s en P=32. En corpus pequenos el overhead limita la mejora.
 
 \begin{figure}[htbp]
   \centering
@@ -78,10 +127,11 @@ ejecucion secuencial; a partir de 16 procesos el tiempo aumenta.
 \end{figure}
 
 \subsection{Speedup y eficiencia}
-La Figura~\ref{fig:speedup} muestra que el speedup se mantiene cerca de 1 para
-P=2--8, y cae por debajo de 1 para P$\ge$16. La eficiencia (Figura~\ref{fig:eff})
-decrece rapidamente, lo cual indica fuerte sobrecarga de comunicacion y una
-fraccion serial dominante (Amdahl).
+La Figura~\ref{fig:speedup} evidencia mejoras sustanciales: para 5000 documentos
+el speedup llega a 3.92 (P=4) y 5.47 (P=32). Para 1000 documentos el mejor
+speedup es 3.25 (P=4). La eficiencia es alta en P=2--4 para corpus grandes
+(cercana a 1), pero disminuye al aumentar P por sobrecarga de sincronizacion
+y recoleccion de resultados.
 
 \begin{figure}[htbp]
   \centering
@@ -98,12 +148,11 @@ fraccion serial dominante (Amdahl).
 \end{figure}
 
 \subsection{Desglose por fases}
-La Figura~\ref{fig:breakdown} evidencia que la \textbf{indexacion} domina el
-tiempo total en todos los tamanos de corpus. Por ejemplo, para 5000 documentos
-el tiempo de indexacion representa casi todo el total. Aunque el tiempo de
-busqueda local disminuye al aumentar P, el beneficio queda oculto por la
-seccion serial y por el costo de \texttt{Scatter/Gather}, que crece con el
-numero de procesos.
+La Figura~\ref{fig:breakdown} muestra que \textbf{Scatter} desaparece (tiempo
+aproximadamente cero) al eliminar la distribucion de la matriz TF-IDF.
+La indexacion ahora se reparte entre procesos y disminuye con P. Sin embargo,
+la fase de \textbf{Gather/Merge} crece para P altos (por ejemplo en P=8 para
+5000 documentos), convirtiendose en el principal limite de escalamiento.
 
 \begin{figure}[htbp]
   \centering
@@ -114,20 +163,20 @@ numero de procesos.
 
 \subsection{Observaciones clave}
 \begin{itemize}
-  \item \textbf{Dominio serial:} la indexacion ocurre solo en el master y
-  concentra la mayor parte del tiempo.
-  \item \textbf{Escalamiento limitado:} el speedup apenas supera 1 para P=2--4
-  y se degrada para P$\ge$16.
-  \item \textbf{Sobrecarga de comunicacion:} el tiempo de \texttt{Scatter}
-  crece notablemente en P grandes, afectando el total.
+  \item \textbf{Mejora global:} la indexacion paralela reduce el tiempo total
+  de forma notable, especialmente en corpus grandes.
+  \item \textbf{Overhead en P altos:} el \texttt{Gather/Merge} de Top-K crece y
+  reduce la eficiencia cuando P es muy grande.
+  \item \textbf{Mejor punto operativo:} para 5000 documentos, P=16--32 ofrece
+  el mejor balance entre speedup y eficiencia.
 \end{itemize}
 
 \section{Conclusiones}
-El motor de busqueda paraleliza correctamente la fase de similitud, pero el
-rendimiento global esta limitado por la indexacion secuencial y la
-comunicacion MPI. Para mejorar la escalabilidad, el siguiente paso natural
-seria paralelizar el calculo de TF-IDF e IDF (vocabulario distribuido o
-map-reduce de terminos) y reducir el volumen de datos transferidos.
+La version paralelizada de TF-IDF e IDF mejora claramente el rendimiento y
+reduce el trafico MPI, eliminando el \texttt{Scatter} de matrices grandes.
+El cuello de botella se desplaza a la recoleccion y fusion de Top-K para
+P altos. Una mejora futura seria hacer un merge jerarquico o parcial para
+reducir el costo del \texttt{Gather}.
 
 \section{Como reproducir las graficas}
 Ejecutar los scripts desde la raiz del proyecto:
