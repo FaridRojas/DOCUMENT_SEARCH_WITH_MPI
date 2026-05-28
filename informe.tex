@@ -131,6 +131,22 @@ procesos (Figura~\ref{fig:speedup}). Con el merge jerarquico, el costo de
 recoleccion de Top-K se reduce, aunque sigue siendo el principal limite en
 P muy altos.
 
+\section{Mejora de rendimiento: merge jerarquico de Top-K}
+Para reducir el costo del \texttt{Gather}, se reemplazo la recoleccion plana
+de resultados por un \textbf{merge jerarquico} (reduccion en arbol). En lugar
+de enviar todos los Top-K directamente al master, los procesos se emparejan y
+fusionan sus listas de manera progresiva:
+\begin{itemize}
+  \item Cada rank parte con su Top-K local ordenado.
+  \item En cada nivel, ranks pares reciben el Top-K de su pareja, fusionan y
+  conservan solo los mejores K resultados.
+  \item El numero de mensajes se reduce a $\log_2(P)$ niveles y el volumen total
+  transferido disminuye, ya que cada fusion mantiene solo K elementos.
+\end{itemize}
+Este esquema reduce la presion sobre el master y baja el tiempo de merge en
+configuraciones con muchos procesos, aunque el overhead de sincronizacion
+todavia limita el escalamiento para P muy altos.
+
 \section{Configuracion experimental}
 Las pruebas se realizaron en el cluster usando los mismos parametros que el
 estudio anterior. Se evaluaron corpus de 100, 500, 1000 y 5000 documentos, con
