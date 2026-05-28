@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 #include <mpi.h>
 
 #include "tfidf.h"
@@ -35,6 +36,31 @@ static void print_usage(const char *prog)
         "  top_k       Number of top results to return\n"
         "  --csv       Optional: output timing as CSV line\n",
         prog);
+}
+
+static SearchResult *merge_topk_pair(const SearchResult *a, int na,
+                                     const SearchResult *b, int nb,
+                                     int k, int *out_count)
+{
+    int total = na + nb;
+    int limit = (total < k) ? total : k;
+    if (out_count) *out_count = limit;
+    if (limit == 0) return NULL;
+
+    SearchResult *out = malloc((size_t)limit * sizeof(SearchResult));
+    if (!out) return NULL;
+
+    int i = 0;
+    int j = 0;
+    int idx = 0;
+    while (idx < limit) {
+        if (i < na && (j >= nb || a[i].score >= b[j].score)) {
+            out[idx++] = a[i++];
+        } else {
+            out[idx++] = b[j++];
+        }
+    }
+    return out;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -65,6 +91,18 @@ int main(int argc, char **argv)
         if (my_rank == 0) fprintf(stderr, "Error: top_k must be > 0\n");
         MPI_Finalize();
         return 1;
+    }
+
+    /* ── MPI types ───────────────────────────────────────────────────── */
+    MPI_Datatype mpi_search_result;
+    {
+        int block_lengths[2] = {1, 1};
+        MPI_Aint offsets[2];
+        MPI_Datatype types[2] = {MPI_INT, MPI_DOUBLE};
+        offsets[0] = offsetof(SearchResult, doc_id);
+        offsets[1] = offsetof(SearchResult, score);
+        MPI_Type_create_struct(2, block_lengths, offsets, types, &mpi_search_result);
+        MPI_Type_commit(&mpi_search_result);
     }
 
     /* ── Timing variables ───────────────────────────────────────────── */
@@ -283,69 +321,58 @@ int main(int argc, char **argv)
     t_search_done = MPI_Wtime();
 
     /* ══════════════════════════════════════════════════════════════════
-     *  PHASE 4: Gather & Merge Top-K (master)
+     *  PHASE 4: Hierarchical Merge Top-K
      * ══════════════════════════════════════════════════════════════════ */
-
-    /*
-     * Each rank sends local_k results (doc_id + score).
-     * We pack them as: [doc_id_0, doc_id_1, ..., score_0, score_1, ...]
-     * for simpler gather; or use two separate gathers.
-     */
-
-    /* Gather the count of results from each rank */
-    int *recv_k = NULL;
-    if (my_rank == 0) recv_k = malloc(world_size * sizeof(int));
-    MPI_Gather(&local_k, 1, MPI_INT, recv_k, 1, MPI_INT, 0, MPI_COMM_WORLD);
-
-    /* Separate gathers for IDs and scores */
-    int *local_ids    = malloc(local_k * sizeof(int));
-    double *local_scores = malloc(local_k * sizeof(double));
-    for (int i = 0; i < local_k; i++) {
-        local_ids[i]    = local_results[i].doc_id;
-        local_scores[i] = local_results[i].score;
+    SearchResult *topk = NULL;
+    int topk_count = local_k;
+    if (local_k > 0) {
+        topk = malloc((size_t)local_k * sizeof(SearchResult));
+        if (!topk) {
+            fprintf(stderr, "Rank %d: failed to allocate top-K buffer\n", my_rank);
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+        memcpy(topk, local_results, (size_t)local_k * sizeof(SearchResult));
     }
 
-    int *gather_displs_id  = NULL;
-    int *gather_displs_sc  = NULL;
-    int *all_ids    = NULL;
-    double *all_scores = NULL;
-    int total_gathered = 0;
+    for (int step = 1; step < world_size; step *= 2) {
+        if (my_rank % (2 * step) == 0) {
+            int partner = my_rank + step;
+            if (partner < world_size) {
+                int recv_count = 0;
+                MPI_Recv(&recv_count, 1, MPI_INT, partner, 100, MPI_COMM_WORLD,
+                         MPI_STATUS_IGNORE);
+                SearchResult *recv_results = NULL;
+                if (recv_count > 0) {
+                    recv_results = malloc((size_t)recv_count * sizeof(SearchResult));
+                    if (!recv_results) {
+                        fprintf(stderr, "Rank %d: failed to allocate recv buffer\n", my_rank);
+                        MPI_Abort(MPI_COMM_WORLD, 1);
+                    }
+                }
+                MPI_Recv(recv_results, recv_count, mpi_search_result, partner, 101,
+                         MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-    if (my_rank == 0) {
-        gather_displs_id = malloc(world_size * sizeof(int));
-        gather_displs_sc = malloc(world_size * sizeof(int));
-        int off = 0;
-        for (int r = 0; r < world_size; r++) {
-            gather_displs_id[r] = off;
-            gather_displs_sc[r] = off;
-            off += recv_k[r];
+                int merged_count = 0;
+                SearchResult *merged = merge_topk_pair(topk, topk_count,
+                                                      recv_results, recv_count,
+                                                      top_k, &merged_count);
+                free(topk);
+                free(recv_results);
+                topk = merged;
+                topk_count = merged_count;
+            }
+        } else {
+            int partner = my_rank - step;
+            MPI_Send(&topk_count, 1, MPI_INT, partner, 100, MPI_COMM_WORLD);
+            MPI_Send(topk, topk_count, mpi_search_result, partner, 101, MPI_COMM_WORLD);
+            break;
         }
-        total_gathered = off;
-        all_ids    = malloc(total_gathered * sizeof(int));
-        all_scores = malloc(total_gathered * sizeof(double));
     }
 
-    MPI_Gatherv(local_ids, local_k, MPI_INT,
-                all_ids, recv_k, gather_displs_id, MPI_INT,
-                0, MPI_COMM_WORLD);
-
-    MPI_Gatherv(local_scores, local_k, MPI_DOUBLE,
-                all_scores, recv_k, gather_displs_sc, MPI_DOUBLE,
-                0, MPI_COMM_WORLD);
-
-    /* ── Master: merge and print results ───────────────────────────── */
+    /* ── Master: print results ─────────────────────────────────────── */
     if (my_rank == 0) {
-        /* Build result array and sort */
-        SearchResult *all_results = malloc(total_gathered * sizeof(SearchResult));
-        for (int i = 0; i < total_gathered; i++) {
-            all_results[i].doc_id = all_ids[i];
-            all_results[i].score  = all_scores[i];
-        }
-        sort_results(all_results, total_gathered);
-
         t_end = MPI_Wtime();
-
-        int final_k = (total_gathered < top_k) ? total_gathered : top_k;
+        int final_k = (topk_count < top_k) ? topk_count : top_k;
 
         if (csv_mode) {
             /* CSV header (only print if first run — caller handles dedup):
@@ -364,7 +391,7 @@ int main(int argc, char **argv)
             printf("------  ----------  ------\n");
             for (int i = 0; i < final_k; i++) {
                 printf("%-6d  %-10.6f  %d\n",
-                       i + 1, all_results[i].score, all_results[i].doc_id);
+                       i + 1, topk[i].score, topk[i].doc_id);
             }
 
             printf("\n--- Timing ---\n");
@@ -374,25 +401,18 @@ int main(int argc, char **argv)
             printf("Gather/merge: %.4f s\n", t_end - t_search_done);
             printf("Total:        %.4f s\n", t_end - t_start);
         }
-
-        free(all_results);
-        free(all_ids);
-        free(all_scores);
-        free(gather_displs_id);
-        free(gather_displs_sc);
-        free(recv_k);
     }
 
     /* ── Cleanup ───────────────────────────────────────────────────── */
-    free(local_ids);
-    free(local_scores);
     free(local_results);
+    free(topk);
     free(my_tfidf);
     free(query_vec);
     free(local_df);
     free(global_df);
     free(idf);
     if (vocab) vocab_free(vocab);
+    MPI_Type_free(&mpi_search_result);
 
     MPI_Finalize();
     return 0;
