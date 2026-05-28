@@ -4,38 +4,36 @@ A parallel document search engine built with MPI that uses **TF-IDF** weighting 
 
 ## Architecture
 
+La indexación es **distribuida**: cada rank carga un subconjunto del corpus,
+construye un vocabulario local, el master fusiona y difunde el vocabulario
+global, y luego todos calculan DF/IDF y TF-IDF en paralelo. **No** se distribuye
+la matriz TF-IDF completa (no hay `MPI_Scatterv`): solo se transfieren el
+vocabulario global y las listas Top-K, reduciendo el volumen de datos.
+
+![Pipeline actual](figuras/pipeline_actual.png)
+
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Rank 0 (Master)                              │
-│  ┌──────────┐  ┌───────────┐  ┌──────────┐  ┌──────────────┐  │
-│  │  Load     │→│  Build    │→│  Compute  │→│  Compute      │  │
-│  │  Corpus   │  │  Vocab    │  │  IDF      │  │  TF-IDF Mat  │  │
-│  └──────────┘  └───────────┘  └──────────┘  └──────┬───────┘  │
-│                                                     │          │
-│               MPI_Bcast(query) + MPI_Scatterv(matrix)          │
-└─────────────────────────────┬───────────────────────────────────┘
-                              │
-        ┌─────────────────────┼─────────────────────┐
-        ▼                     ▼                     ▼
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│   Rank 0     │    │   Rank 1     │    │   Rank P-1   │
-│  Cosine Sim  │    │  Cosine Sim  │    │  Cosine Sim  │
-│  Local Top-K │    │  Local Top-K │    │  Local Top-K │
-└──────┬───────┘    └──────┬───────┘    └──────┬───────┘
-       │                   │                   │
-       └───────────────────┼───────────────────┘
-                           │  MPI_Gatherv
-                           ▼
-                  ┌──────────────────┐
-                  │  Master: Merge   │
-                  │  Global Top-K    │
-                  └──────────────────┘
+TODOS LOS RANKS (en paralelo desde el inicio)
+  Listar archivos del corpus (orden global idéntico)
+        │
+  Cargar SUBCONJUNTO local de documentos
+        │
+  Construir vocabulario LOCAL
+        │  MPI_Gatherv(vocab local) → Rank 0
+        ▼
+  Rank 0: fusiona vocabularios → VOCABULARIO GLOBAL
+        │  MPI_Bcast(vocabulario global)
+        ▼
+TODOS LOS RANKS
+  DF local ──MPI_Allreduce(SUM)──► DF global → IDF
+  TF-IDF de documentos LOCALES + vector TF-IDF de la query
+  Similitud coseno por documento → Top-K LOCAL (ordenado)
+        │  Merge jerárquico en ÁRBOL (log₂P niveles, Send/Recv por pares)
+        ▼
+  Rank 0: TOP-K GLOBAL (ranking final)
 ```
 
-**Nota (version actual):** la indexacion es distribuida. Cada rank carga un
-subconjunto del corpus, construye un vocabulario local, el master fusiona y
-difunde el vocabulario global, y luego todos calculan DF/IDF y TF-IDF de forma
-paralela. Solo se transfieren listas Top-K, reduciendo el volumen de datos.
+> El diagrama PNG se regenera con `python3 plot_pipeline.py`.
 
 ## Files
 
@@ -153,7 +151,12 @@ Documents are ranked by their cosine similarity to the query vector.
 
 ### MPI Distribution Strategy
 
-- Documents are evenly distributed across P ranks using `MPI_Scatterv`
-- Each rank computes cosine similarity for its chunk
-- Local top-K results are gathered via `MPI_Gatherv`
-- Master merges all local top-K lists into a global top-K
+- Documents are evenly partitioned across P ranks; **each rank loads only its
+  own subset** from disk (no central scatter of the TF-IDF matrix).
+- Local vocabularies are gathered (`MPI_Gatherv`), merged on rank 0, and the
+  global vocabulary is broadcast (`MPI_Bcast`).
+- Document frequencies are reduced globally with `MPI_Allreduce` so every rank
+  computes the same IDF, then its local TF-IDF matrix.
+- Each rank computes cosine similarity for its chunk and keeps a local top-K.
+- Local top-K lists are merged into a global top-K via a **hierarchical tree
+  reduction** (`MPI_Send`/`MPI_Recv` over log₂P levels), not a flat gather.
