@@ -1,0 +1,129 @@
+/opt/ohpc/pub/mpi/openmpi-gcc11/4.1.6/bin/mpicc
+============================================
+  MPI Document Search Engine — SC3 Cluster
+============================================
+Node:       guane01.sc3.uis.edu.co
+Directory:  /home/jsoterov01/DOCUMENT_SEARCH_WITH_MPI
+Nodes:      guane[01-04]
+Date:       Thu May 28 10:48:24 AM -05 2026
+
+Compiling search_engine ...
+Compilation successful.
+
+Generating test corpora...
+  corpus_100/ already exists, skipping generation.
+  corpus_500/ already exists, skipping generation.
+  corpus_1000/ already exists, skipping generation.
+  corpus_5000/ already exists, skipping generation.
+
+Starting 84 experiment runs...
+
+--- Corpus: 100 documents ---
+  Run 1/84  (P=1, docs=100, rep=1)
+  Run 2/84  (P=1, docs=100, rep=2)
+  Run 3/84  (P=1, docs=100, rep=3)
+  Run 4/84  (P=2, docs=100, rep=1)
+  Run 5/84  (P=2, docs=100, rep=2)
+  Run 6/84  (P=2, docs=100, rep=3)
+  Run 7/84  (P=4, docs=100, rep=1)
+  Run 8/84  (P=4, docs=100, rep=2)
+  Run 9/84  (P=4, docs=100, rep=3)
+  Run 10/84  (P=8, docs=100, rep=1)
+  Run 11/84  (P=8, docs=100, rep=2)
+  Run 12/84  (P=8, docs=100, rep=3)
+  Run 13/84  (P=16, docs=100, rep=1)
+  Run 14/84  (P=16, docs=100, rep=2)
+  Run 15/84  (P=16, docs=100, rep=3)
+  Run 16/84  (P=32, docs=100, rep=1)
+  Run 17/84  (P=32, docs=100, rep=2)
+  Run 18/84  (P=32, docs=100, rep=3)
+  Run 19/84  (P=64, docs=100, rep=1)
+  Run 20/84  (P=64, docs=100, rep=2)
+  Run 21/84  (P=64, docs=100, rep=3)
+
+--- Corpus: 500 documents ---
+  Run 22/84  (P=1, docs=500, rep=1)
+  Run 23/84  (P=1, docs=500, rep=2)
+  Run 24/84  (P=1, docs=500, rep=3)
+  Run 25/84  (P=2, docs=500, rep=1)
+  Run 26/84  (P=2, docs=500, rep=2)
+  Run 27/84  (P=2, docs=500, rep=3)
+  Run 28/84  (P=4, docs=500, rep=1)
+  Run 29/84  (P=4, docs=500, rep=2)
+  Run 30/84  (P=4, docs=500, rep=3)
+  Run 31/84  (P=8, docs=500, rep=1)
+  Run 32/84  (P=8, docs=500, rep=2)
+  Run 33/84  (P=8, docs=500, rep=3)
+  Run 34/84  (P=16, docs=500, rep=1)
+  Run 35/84  (P=16, docs=500, rep=2)
+  Run 36/84  (P=16, docs=500, rep=3)
+  Run 37/84  (P=32, docs=500, rep=1)
+  Run 38/84  (P=32, docs=500, rep=2)
+  Run 39/84  (P=32, docs=500, rep=3)
+  Run 40/84  (P=64, docs=500, rep=1)
+  Run 41/84  (P=64, docs=500, rep=2)
+  Run 42/84  (P=64, docs=500, rep=3)
+
+--- Corpus: 1000 documents ---
+  Run 43/84  (P=1, docs=1000, rep=1)
+  Run 44/84  (P=1, docs=1000, rep=2)
+  Run 45/84  (P=1, docs=1000, rep=3)
+  Run 46/84  (P=2, docs=1000, rep=1)
+  Run 47/84  (P=2, docs=1000, rep=2)
+  Run 48/84  (P=2, docs=1000, rep=3)
+  Run 49/84  (P=4, docs=1000, rep=1)
+  Run 50/84  (P=4, docs=1000, rep=2)
+  Run 51/84  (P=4, docs=1000, rep=3)
+  Run 52/84  (P=8, docs=1000, rep=1)
+  Run 53/84  (P=8, docs=1000, rep=2)
+  Run 54/84  (P=8, docs=1000, rep=3)
+  Run 55/84  (P=16, docs=1000, rep=1)
+  Run 56/84  (P=16, docs=1000, rep=2)
+  Run 57/84  (P=16, docs=1000, rep=3)
+  Run 58/84  (P=32, docs=1000, rep=1)
+  Run 59/84  (P=32, docs=1000, rep=2)
+  Run 60/84  (P=32, docs=1000, rep=3)
+  Run 61/84  (P=64, docs=1000, rep=1)
+  Run 62/84  (P=64, docs=1000, rep=2)
+  Run 63/84  (P=64, docs=1000, rep=3)
+
+--- Corpus: 5000 documents ---
+  Run 64/84  (P=1, docs=5000, rep=1)
+  Run 65/84  (P=1, docs=5000, rep=2)
+  Run 66/84  (P=1, docs=5000, rep=3)
+  Run 67/84  (P=2, docs=5000, rep=1)
+  Run 68/84  (P=2, docs=5000, rep=2)
+  Run 69/84  (P=2, docs=5000, rep=3)
+  Run 70/84  (P=4, docs=5000, rep=1)
+  Run 71/84  (P=4, docs=5000, rep=2)
+  Run 72/84  (P=4, docs=5000, rep=3)
+  Run 73/84  (P=8, docs=5000, rep=1)
+  Run 74/84  (P=8, docs=5000, rep=2)
+  Run 75/84  (P=8, docs=5000, rep=3)
+  Run 76/84  (P=16, docs=5000, rep=1)
+  Run 77/84  (P=16, docs=5000, rep=2)
+  Run 78/84  (P=16, docs=5000, rep=3)
+  Run 79/84  (P=32, docs=5000, rep=1)
+  Run 80/84  (P=32, docs=5000, rep=2)
+  Run 81/84  (P=32, docs=5000, rep=3)
+  Run 82/84  (P=64, docs=5000, rep=1)
+  Run 83/84  (P=64, docs=5000, rep=2)
+  Run 84/84  (P=64, docs=5000, rep=3)
+
+Raw results written to results/raw_results.csv
+
+Generating performance tables...
+Reading results from 'results/raw_results.csv'...
+  84 data points loaded.
+
+Generating tables in 'results/'...
+  Timing table:     results/timing_table.csv
+  Speedup table:    results/speedup_table.csv
+  Efficiency table: results/efficiency_table.csv
+  Summary:          results/summary.txt
+
+Done! All tables written to 'results/'
+
+============================================
+  All done! Check results/
+============================================
