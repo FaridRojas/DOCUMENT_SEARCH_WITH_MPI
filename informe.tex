@@ -1,0 +1,140 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath}
+
+\geometry{margin=2.5cm}
+
+\title{Informe de Desempeno\\MPI Document Search Engine}
+\author{Proyecto Final}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Resumen}
+Se presenta un motor de busqueda de documentos en paralelo usando MPI que
+emplea ponderacion TF-IDF y similitud coseno. El informe se centra en el
+analisis de rendimiento obtenido en el cluster, apoyado por graficas
+generadas a partir de los resultados experimentales.
+
+\section{Descripcion del algoritmo}
+El motor transforma cada documento en un vector TF-IDF y calcula un vector
+TF-IDF para la consulta. Para cada documento se calcula la similitud coseno
+con la consulta y se ordenan los resultados para obtener el Top-K.
+
+\subsection{TF-IDF}
+Para cada termino $t$ en el documento $d$:
+\[
+  TF(t,d) = \frac{\text{freq}(t,d)}{\text{total de terminos en } d}
+\]
+\[
+  IDF(t) = \log \left(\frac{N}{1 + df(t)}\right)
+\]
+El vector final es $TF\mbox{-}IDF(t,d)=TF(t,d)\cdot IDF(t)$, donde $N$ es el
+numero total de documentos y $df(t)$ es el numero de documentos que contienen
+el termino.
+
+\subsection{Similitud coseno}
+\[
+  sim(q,d) = \frac{q \cdot d}{\|q\|\|d\|}
+\]
+Los documentos se ordenan de mayor a menor segun esta similitud.
+
+\section{Paralelizacion con MPI}
+El programa divide el trabajo en cuatro fases:
+\begin{enumerate}
+  \item \textbf{Indexacion (rank 0):} carga el corpus, construye vocabulario,
+  calcula IDF y la matriz TF-IDF.
+  \item \textbf{Distribucion:} el vector de consulta se difunde con
+  \texttt{MPI\_Bcast} y la matriz TF-IDF se reparte con \texttt{MPI\_Scatterv}.
+  \item \textbf{Busqueda local:} cada proceso calcula similitudes coseno y
+  obtiene su Top-K local.
+  \item \textbf{Recoleccion y merge:} el master recoge resultados con
+  \texttt{MPI\_Gatherv} y ordena el Top-K global.
+\end{enumerate}
+
+\section{Configuracion experimental}
+Las pruebas se realizaron sobre un cluster con ejecucion MPI, usando
+corpus sinteticos generados con \texttt{generate\_corpus.py}. Se evaluaron
+corpus de 100, 500, 1000 y 5000 documentos, con vocabulario de alrededor de
+5000 palabras. Se uso Top-K = 10 y se ejecutaron multiples repeticiones por
+configuracion (ver resultados en \texttt{results/}).
+
+\section{Resultados y analisis}
+
+\subsection{Tiempo total}
+La Figura~\ref{fig:total-time} muestra el tiempo total promedio para cada
+tamano de corpus. Para hasta 8 procesos el tiempo total es muy similar a la
+ejecucion secuencial; a partir de 16 procesos el tiempo aumenta.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.9\linewidth]{figuras/total_time_vs_procs.png}
+  \caption{Tiempo total promedio vs procesos.}
+  \label{fig:total-time}
+\end{figure}
+
+\subsection{Speedup y eficiencia}
+La Figura~\ref{fig:speedup} muestra que el speedup se mantiene cerca de 1 para
+P=2--8, y cae por debajo de 1 para P$\ge$16. La eficiencia (Figura~\ref{fig:eff})
+decrece rapidamente, lo cual indica fuerte sobrecarga de comunicacion y una
+fraccion serial dominante (Amdahl).
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.9\linewidth]{figuras/speedup_vs_procs.png}
+  \caption{Speedup por cantidad de procesos.}
+  \label{fig:speedup}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.9\linewidth]{figuras/efficiency_vs_procs.png}
+  \caption{Eficiencia por cantidad de procesos.}
+  \label{fig:eff}
+\end{figure}
+
+\subsection{Desglose por fases}
+La Figura~\ref{fig:breakdown} evidencia que la \textbf{indexacion} domina el
+tiempo total en todos los tamanos de corpus. Por ejemplo, para 5000 documentos
+el tiempo de indexacion representa casi todo el total. Aunque el tiempo de
+busqueda local disminuye al aumentar P, el beneficio queda oculto por la
+seccion serial y por el costo de \texttt{Scatter/Gather}, que crece con el
+numero de procesos.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.95\linewidth]{figuras/time_breakdown_stacked.png}
+  \caption{Desglose de tiempos por fase (Index/Scatter/Search/Merge).}
+  \label{fig:breakdown}
+\end{figure}
+
+\subsection{Observaciones clave}
+\begin{itemize}
+  \item \textbf{Dominio serial:} la indexacion ocurre solo en el master y
+  concentra la mayor parte del tiempo.
+  \item \textbf{Escalamiento limitado:} el speedup apenas supera 1 para P=2--4
+  y se degrada para P$\ge$16.
+  \item \textbf{Sobrecarga de comunicacion:} el tiempo de \texttt{Scatter}
+  crece notablemente en P grandes, afectando el total.
+\end{itemize}
+
+\section{Conclusiones}
+El motor de busqueda paraleliza correctamente la fase de similitud, pero el
+rendimiento global esta limitado por la indexacion secuencial y la
+comunicacion MPI. Para mejorar la escalabilidad, el siguiente paso natural
+seria paralelizar el calculo de TF-IDF e IDF (vocabulario distribuido o
+map-reduce de terminos) y reducir el volumen de datos transferidos.
+
+\section{Como reproducir las graficas}
+Ejecutar los scripts desde la raiz del proyecto:
+\begin{verbatim}
+python3 plot_scaling.py
+python3 plot_breakdown.py
+\end{verbatim}
+Las figuras se guardan en el directorio \texttt{figuras/}.
+
+\end{document}
