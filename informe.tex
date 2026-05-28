@@ -127,8 +127,9 @@ En la version actual, el trabajo se distribuye desde el inicio:
 El impacto se observa en los resultados: el tiempo de \textbf{Scatter} es
 practicamente cero (Figura~\ref{fig:breakdown}) y el tiempo total baja con P en
 corpus grandes (Figura~\ref{fig:total-time}), con speedup notable hasta 32
-procesos (Figura~\ref{fig:speedup}). El nuevo cuello de botella se desplaza a la
-recoleccion de Top-K (\texttt{Gather/Merge}) cuando P es alto.
+procesos (Figura~\ref{fig:speedup}). Con el merge jerarquico, el costo de
+recoleccion de Top-K se reduce, aunque sigue siendo el principal limite en
+P muy altos.
 
 \section{Configuracion experimental}
 Las pruebas se realizaron en el cluster usando los mismos parametros que el
@@ -136,13 +137,29 @@ estudio anterior. Se evaluaron corpus de 100, 500, 1000 y 5000 documentos, con
 vocabulario de alrededor de 5000 palabras, Top-K = 10 y multiples repeticiones.
 Los resultados se almacenan en \texttt{results/}.
 
+\subsection{Configuracion de ejecucion en el cluster}
+La ejecucion en el cluster se definio mediante un script SLURM
+\texttt{run\_search.sh} con los siguientes parametros principales:
+\begin{itemize}
+  \item \textbf{Particion:} \texttt{legacy}
+  \item \textbf{Tiempo maximo:} 04:00:00
+  \item \textbf{Nodos:} 4
+  \item \textbf{Tareas por nodo:} 16 (hasta 64 procesos en total)
+  \item \textbf{Memoria por CPU:} 512 MB
+  \item \textbf{MPI:} OpenMPI GCC 4.1.6 (modulo \texttt{mpi/openmpi-gcc11/4.1.6})
+\end{itemize}
+Esta configuracion permite ejecutar los experimentos con P = 1, 2, 4, 8, 16,
+32 y 64 procesos, manteniendo coherencia con las pruebas de escalabilidad
+reportadas en este informe.
+
 \section{Resultados y analisis}
 
 \subsection{Tiempo total}
 La Figura~\ref{fig:total-time} muestra reducciones claras del tiempo total al
 aumentar procesos, especialmente para corpus grandes. Por ejemplo, para 5000
-documentos el tiempo total baja de 45.0 s (P=1) a 11.5 s (P=4) y alcanza un
-minimo de 8.23 s en P=32. En corpus pequenos el overhead limita la mejora.
+documentos el tiempo total baja de 46.1 s (P=1) a 11.5 s (P=4) y alcanza un
+minimo de 8.37 s en P=32; en P=64 vuelve a crecer por sobrecarga. En corpus
+pequenos el overhead limita la mejora.
 
 \begin{figure}[htbp]
   \centering
@@ -153,8 +170,8 @@ minimo de 8.23 s en P=32. En corpus pequenos el overhead limita la mejora.
 
 \subsection{Speedup y eficiencia}
 La Figura~\ref{fig:speedup} evidencia mejoras sustanciales: para 5000 documentos
-el speedup llega a 3.92 (P=4) y 5.47 (P=32). Para 1000 documentos el mejor
-speedup es 3.25 (P=4). La eficiencia es alta en P=2--4 para corpus grandes
+el speedup llega a 4.02 (P=4) y 5.50 (P=32). Para 1000 documentos el mejor
+speedup es 3.35 (P=4). La eficiencia es alta en P=2--4 para corpus grandes
 (cercana a 1), pero disminuye al aumentar P por sobrecarga de sincronizacion
 y recoleccion de resultados.
 
@@ -175,9 +192,9 @@ y recoleccion de resultados.
 \subsection{Desglose por fases}
 La Figura~\ref{fig:breakdown} muestra que \textbf{Scatter} desaparece (tiempo
 aproximadamente cero) al eliminar la distribucion de la matriz TF-IDF.
-La indexacion ahora se reparte entre procesos y disminuye con P. Sin embargo,
-la fase de \textbf{Gather/Merge} crece para P altos (por ejemplo en P=8 para
-5000 documentos), convirtiendose en el principal limite de escalamiento.
+La indexacion ahora se reparte entre procesos y disminuye con P. Con el
+merge jerarquico, el costo de \textbf{Gather/Merge} baja en P altos, pero sigue
+creciendo con el numero de procesos y domina el overhead en escalas grandes.
 
 \begin{figure}[htbp]
   \centering
@@ -190,8 +207,8 @@ la fase de \textbf{Gather/Merge} crece para P altos (por ejemplo en P=8 para
 \begin{itemize}
   \item \textbf{Mejora global:} la indexacion paralela reduce el tiempo total
   de forma notable, especialmente en corpus grandes.
-  \item \textbf{Overhead en P altos:} el \texttt{Gather/Merge} de Top-K crece y
-  reduce la eficiencia cuando P es muy grande.
+  \item \textbf{Overhead en P altos:} el merge jerarquico reduce el costo del
+  \texttt{Gather/Merge}, pero aun limita la eficiencia cuando P es muy grande.
   \item \textbf{Mejor punto operativo:} para 5000 documentos, P=16--32 ofrece
   el mejor balance entre speedup y eficiencia.
 \end{itemize}
@@ -199,9 +216,8 @@ la fase de \textbf{Gather/Merge} crece para P altos (por ejemplo en P=8 para
 \section{Conclusiones}
 La version paralelizada de TF-IDF e IDF mejora claramente el rendimiento y
 reduce el trafico MPI, eliminando el \texttt{Scatter} de matrices grandes.
-El cuello de botella se desplaza a la recoleccion y fusion de Top-K para
-P altos. Una mejora futura seria hacer un merge jerarquico o parcial para
-reducir el costo del \texttt{Gather}.
+El merge jerarquico disminuye el costo de recoleccion de Top-K, pero en P muy
+altos el overhead de fusion y sincronizacion sigue siendo el principal limite.
 
 \section{Como reproducir las graficas}
 Ejecutar los scripts desde la raiz del proyecto:
