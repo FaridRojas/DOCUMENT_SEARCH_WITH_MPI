@@ -1,0 +1,77 @@
+================================================================================
+                    COMANDOS PARA GENERAR LAS GRAFICAS
+================================================================================
+
+Este archivo contiene los comandos necesarios para generar todas las graficas
+de rendimiento del MPI Document Search Engine.
+
+REQUISITOS:
+-----------
+- Python 3
+- matplotlib
+- Los archivos de resultados deben estar en: ../results/
+  (timing_table.csv, speedup_table.csv, efficiency_table.csv)
+
+INSTRUCCIONES:
+--------------
+
+1. Generar graficas de escalamiento (tiempo total, speedup, eficiencia):
+   
+   $ cd ..
+   $ python3 plot_scaling.py
+   
+   Genera:
+     - figuras/total_time_vs_procs.png
+     - figuras/speedup_vs_procs.png
+     - figuras/efficiency_vs_procs.png
+
+2. Generar grafica de desglose de tiempos por fases:
+   
+   $ cd ..
+   $ python3 plot_breakdown.py
+   
+   Genera:
+     - figuras/time_breakdown_stacked.png
+
+EJECUTAR AMBOS SCRIPTS DE UNA VEZ:
+----------------------------------
+
+$ cd ..
+$ python3 plot_scaling.py && python3 plot_breakdown.py
+
+Esto generara todas las graficas automaticamente en el directorio figuras/.
+
+DESCRIPCION DE LAS GRAFICAS:
+----------------------------
+
+1. total_time_vs_procs.png
+   - Muestra el tiempo total promedio para cada tamaño de corpus
+   - Eje X: numero de procesos (P)
+   - Eje Y: tiempo en segundos
+   - Una linea por tamaño de corpus
+
+2. speedup_vs_procs.png
+   - Muestra el speedup (S = T1 / Tp) vs numero de procesos
+   - Eje X: numero de procesos (P)
+   - Eje Y: speedup (linea punteada negra = ideal)
+   - Una linea por tamaño de corpus
+
+3. efficiency_vs_procs.png
+   - Muestra la eficiencia (E = S / P) vs numero de procesos
+   - Eje X: numero de procesos (P)
+   - Eje Y: eficiencia (1.0 = ideal)
+   - Una linea por tamaño de corpus
+
+4. time_breakdown_stacked.png
+   - Desglose de tiempos por fase: Indexacion, Scatter, Search, Merge
+   - Subgraficas, una por tamaño de corpus
+   - Barras apiladas mostrando la contribucion de cada fase
+
+NOTAS:
+------
+- Las graficas se guardan en formato PNG con resolucion 200 dpi
+- Los datos provienen de los archivos CSV generados durante la ejecucion
+  del proyecto en el cluster
+- Para regenear datos, ejecutar: ./run_search.sh en el cluster
+
+================================================================================

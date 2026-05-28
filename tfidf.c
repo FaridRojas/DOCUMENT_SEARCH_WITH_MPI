@@ -102,6 +102,68 @@ void vocab_free(Vocabulary *v)
     free(v);
 }
 
+void vocab_add_from_buffer(Vocabulary *v, const char *buf, int len)
+{
+    if (!v || !buf || len <= 0) return;
+
+    char word[MAX_WORD_LEN];
+    int wlen = 0;
+    for (int i = 0; i < len; i++) {
+        char c = buf[i];
+        if (c == '\n' || c == '\0') {
+            if (wlen > 0) {
+                word[wlen] = '\0';
+                vocab_add(v, word);
+                wlen = 0;
+            }
+        } else if (wlen < MAX_WORD_LEN - 1) {
+            word[wlen++] = c;
+        }
+    }
+    if (wlen > 0) {
+        word[wlen] = '\0';
+        vocab_add(v, word);
+    }
+}
+
+char *vocab_pack(const Vocabulary *v, int *out_len)
+{
+    if (!v || v->size == 0) {
+        if (out_len) *out_len = 0;
+        return NULL;
+    }
+
+    int total = 0;
+    for (int i = 0; i < v->size; i++) {
+        total += (int)strlen(v->words[i]) + 1; /* + '\n' */
+    }
+
+    char *buf = malloc((size_t)total);
+    if (!buf) {
+        if (out_len) *out_len = 0;
+        return NULL;
+    }
+
+    int off = 0;
+    for (int i = 0; i < v->size; i++) {
+        int len = (int)strlen(v->words[i]);
+        memcpy(buf + off, v->words[i], (size_t)len);
+        off += len;
+        buf[off++] = '\n';
+    }
+
+    if (out_len) *out_len = total;
+    return buf;
+}
+
+Vocabulary *vocab_from_buffer(const char *buf, int len)
+{
+    Vocabulary *v = vocab_create();
+    if (!v) return NULL;
+    vocab_add_from_buffer(v, buf, len);
+    return v;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════
  *  Document I/O
  * ═══════════════════════════════════════════════════════════════════════ */
@@ -118,6 +180,107 @@ static int ends_with_txt(const char *name)
 static int cmp_doc_id(const void *a, const void *b)
 {
     return ((const Document *)a)->id - ((const Document *)b)->id;
+}
+
+static int cmp_str_ptr(const void *a, const void *b)
+{
+    const char *sa = *(const char * const *)a;
+    const char *sb = *(const char * const *)b;
+    return strcmp(sa, sb);
+}
+
+char **list_corpus_files(const char *corpus_dir, int *out_count)
+{
+    DIR *dir = opendir(corpus_dir);
+    if (!dir) {
+        fprintf(stderr, "Error: cannot open corpus directory '%s'\n", corpus_dir);
+        if (out_count) *out_count = 0;
+        return NULL;
+    }
+
+    int capacity = INITIAL_CAP;
+    int count    = 0;
+    char **files = malloc(capacity * sizeof(char *));
+    if (!files) {
+        closedir(dir);
+        if (out_count) *out_count = 0;
+        return NULL;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (!ends_with_txt(entry->d_name)) continue;
+        if (count >= capacity) {
+            capacity *= 2;
+            files = realloc(files, capacity * sizeof(char *));
+            if (!files) {
+                closedir(dir);
+                if (out_count) *out_count = 0;
+                return NULL;
+            }
+        }
+        files[count++] = strdup(entry->d_name);
+    }
+    closedir(dir);
+
+    if (count == 0) {
+        free(files);
+        if (out_count) *out_count = 0;
+        return NULL;
+    }
+
+    qsort(files, count, sizeof(char *), cmp_str_ptr);
+    if (out_count) *out_count = count;
+    return files;
+}
+
+void free_corpus_files(char **files, int count)
+{
+    if (!files) return;
+    for (int i = 0; i < count; i++) free(files[i]);
+    free(files);
+}
+
+Document *load_corpus_subset(const char *corpus_dir, char **files,
+                             int start, int count)
+{
+    if (count <= 0) return NULL;
+    Document *docs = malloc((size_t)count * sizeof(Document));
+    if (!docs) return NULL;
+
+    for (int i = 0; i < count; i++) {
+        docs[i].id = start + i;
+        docs[i].text = NULL;
+
+        const char *name = files[start + i];
+        char path[MAX_PATH_LEN];
+        snprintf(path, sizeof(path), "%s/%s", corpus_dir, name);
+
+        FILE *fp = fopen(path, "r");
+        if (!fp) {
+            fprintf(stderr, "Error: cannot open file '%s'\n", path);
+            free_corpus(docs, i);
+            return NULL;
+        }
+
+        fseek(fp, 0, SEEK_END);
+        long fsize = ftell(fp);
+        rewind(fp);
+
+        char *text = malloc((size_t)fsize + 1);
+        if (!text) {
+            fclose(fp);
+            free_corpus(docs, i);
+            return NULL;
+        }
+        size_t nread = fread(text, 1, (size_t)fsize, fp);
+        text[nread] = '\0';
+        fclose(fp);
+
+        docs[i].text = text;
+    }
+
+    return docs;
 }
 
 Document *load_corpus(const char *corpus_dir, int *out_count)
@@ -240,6 +403,45 @@ double *compute_idf(Document *docs, int num_docs, const Vocabulary *vocab)
     }
 
     free(df);
+    return idf;
+}
+
+int *compute_local_df(Document *docs, int num_docs, const Vocabulary *vocab)
+{
+    int *df = calloc(vocab->size, sizeof(int));
+    if (!df) return NULL;
+
+    if (num_docs <= 0 || !docs) return df;
+
+    char *seen = calloc((size_t)vocab->size, sizeof(char));
+    if (!seen) return df;
+
+    for (int d = 0; d < num_docs; d++) {
+        memset(seen, 0, (size_t)vocab->size);
+        int num_tokens = 0;
+        char **tokens = tokenize(docs[d].text, &num_tokens);
+        for (int t = 0; t < num_tokens; t++) {
+            int id = vocab_lookup(vocab, tokens[t]);
+            if (id >= 0 && !seen[id]) {
+                df[id]++;
+                seen[id] = 1;
+            }
+        }
+        free_tokens(tokens, num_tokens);
+    }
+
+    free(seen);
+    return df;
+}
+
+double *compute_idf_from_df(const int *df, int vocab_size, int num_docs)
+{
+    double *idf = calloc((size_t)vocab_size, sizeof(double));
+    if (!idf) return NULL;
+
+    for (int i = 0; i < vocab_size; i++) {
+        idf[i] = log((double)num_docs / (1.0 + (double)df[i]));
+    }
     return idf;
 }
 
